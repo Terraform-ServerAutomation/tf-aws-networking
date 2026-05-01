@@ -1,0 +1,101 @@
+name: Terraform CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    name: Terraform Validate & Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.5"
+
+      # ----------------------------------------
+      # Root module
+      # ----------------------------------------
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init (root)
+        id: init
+        run: terraform init -backend=false
+
+      - name: Terraform Validate (root)
+        id: validate
+        run: terraform validate
+
+      # ----------------------------------------
+      # Examples
+      # ----------------------------------------
+      - name: Terraform Init (examples/complete)
+        working-directory: examples/complete
+        run: terraform init -backend=false
+
+      - name: Terraform Validate (examples/complete)
+        working-directory: examples/complete
+        run: terraform validate
+
+      # ----------------------------------------
+      # Security scanning
+      # ----------------------------------------
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: true
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true
+          output_format: sarif
+          output_file_path: results.sarif
+
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
+
+      # ----------------------------------------
+      # PR comment with results
+      # ----------------------------------------
+      - name: Post Terraform results to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Format \`${{ steps.fmt.outcome }}\`
+            #### Terraform Init \`${{ steps.init.outcome }}\`
+            #### Terraform Validate \`${{ steps.validate.outcome }}\`
+
+            *Triggered by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
